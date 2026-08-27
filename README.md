@@ -2,7 +2,7 @@
 
 Учебный starter для итоговых заданий первого уровня курса Superteam KZ. Он показывает современный минимальный каркас токен-программы без привязки к legacy JavaScript SDK.
 
-> Решение задания 1 находится в ветке `task/01-tests`. Не работайте напрямую в ветке `main`: для каждого задания создавайте отдельную ветку.
+> Решения заданий находятся в отдельных ветках: `task/01-tests` и `task/02-burn`. Не работайте напрямую в ветке `main`.
 
 ## Как получить проект через GitHub
 
@@ -56,7 +56,36 @@ cargo test --workspace --locked
 
 Не публикуйте keypair, seed phrase, приватные ключи или `.env` с секретами.
 
-Следующие задания выполняются в ветках `task/02-burn` и `task/03-escrow`. Их условия выдаются на учебной платформе; готовой реализации в starter нет.
+Следующее задание выполняется в ветке `task/03-escrow`; его условия выдаются на учебной платформе.
+
+## Задание 2 — сжигание токенов
+
+В ветке `task/02-burn` добавлена инструкция `burn_tokens`. Она использует `anchor_spl::token_interface::burn_checked` и передаёт в CPI decimals из проверенного mint.
+
+Account constraints проверяют, что mint принадлежит выбранной token program, а source является token account этого mint и authority. `authority` объявлен как `Signer`, mint и source — как `InterfaceAccount`, поэтому критичные аккаунты не принимаются через `UncheckedAccount`. Сумма дополнительно проверяется программой через `AmountMustBePositive`.
+
+Тесты проверяют уменьшение баланса и supply на одинаковую величину, нулевую сумму, неверный authority, другой mint и недостаточный баланс. После каждой ошибки баланс и supply остаются без изменений.
+
+## Задание 3 — escrow
+
+В workspace добавлен program `programs/escrow`. Каждая сделка хранится в `EscrowState` по PDA с seeds `[b"escrow", sender, deal_id]`. В state записаны sender, receiver, mint, точная сумма, deal ID, bump и статус. Vault — отдельный Token-2022 account PDA с seeds `[b"vault", escrow_state]`; его authority — escrow PDA, а Anchor constraints связывают его с конкретным mint и token program.
+
+### State machine
+
+```text
+Created --deposit--> Funded --release--> Released (закрытие state и vault)
+    |                    |
+    +------cancel--------+--> Cancelled (закрытие state и vault)
+```
+
+`initialize` принимает только ненулевую сумму и отличающегося receiver. `deposit` доступен sender и переводит ровно сумму сделки через `transfer_checked`. `release` доступен только sender для Funded-сделки и переводит vault в receiver ATA. `cancel` доступен sender для Created/Funded-сделки и возвращает внесённые токены sender. После завершения state и пустой vault закрываются, rent возвращается sender. Повторное завершение невозможно: аккаунты уже закрыты, а промежуточные статусы проверяются constraints.
+
+### Threat model
+
+- Чужой sender не может подписать deposit/release/cancel: sender — `Signer`, а state проверяет `has_one = sender` и PDA seeds.
+- Нельзя подменить mint, receiver, vault или token program: state `has_one`, `mint::token_program`, `token::mint`, `token::authority` и vault seeds проверяются программой.
+- Нельзя вывести больше внесённого или заблокировать чужие средства: deposit принимает только sender token account и точную сумму, release/cancel подписываются escrow PDA, а CPI использует decimals mint.
+- Нулевая сумма, повторный deposit, повторный deal ID, недостаточный баланс и неверные аккаунты отклоняются до изменения state; тесты проверяют сохранение баланса и supply после отказа.
 
 ## Зафиксированный стек
 
@@ -78,18 +107,19 @@ cargo test --workspace --locked
 - выпуск токенов через `mint_to`;
 - перевод через `transfer_checked`;
 - проверки положительной суммы, полномочий, mint и token program на уровне Anchor accounts constraints;
-- пять LiteSVM-тестов: mint, token account, minting, transfer и негативные сценарии.
+- инструкции `burn_tokens` через `burn_checked` и семь LiteSVM-тестов: mint, token account, minting, transfer, burn и негативные сценарии;
+- `programs/escrow` с двумя положительными E2E-тестами release/cancel и негативными сценариями.
 
-Функции `burn_tokens` и Escrow намеренно отсутствуют: студент реализует их в следующих заданиях.
+Escrow использует только Token-2022 и `token_interface`; TypeScript-клиент не требуется.
 
 ## Быстрый старт
 
 1. Установите версии из раздела «Зафиксированный стек» через AVM, rustup и официальный Solana installer.
-2. Для локального прохождения заданий выполните `anchor build --ignore-keys`. Для собственного devnet-деплоя создайте локальный program keypair и выполните `anchor keys sync`. Не коммитьте keypair или seed phrase.
+2. Для локального прохождения заданий выполните `anchor build --ignore-keys` — он собирает оба workspace programs. Для собственного devnet-деплоя создайте локальный program keypair и выполните `anchor keys sync`. Не коммитьте keypair или seed phrase.
 3. После первой сборки выполните `cargo test --workspace --locked`.
 4. Разрабатывайте каждое задание в отдельной ветке: `task/01-tests`, `task/02-burn`, `task/03-escrow`.
 
-Тест загружает собранный файл `target/deploy/solana_level_1_token_starter.so`, поэтому перед первым `cargo test` нужен `anchor build --ignore-keys`. В Anchor CLI без поддержки этого флага используйте эквивалентный `anchor build --skip-lint`.
+Тесты загружают `target/deploy/solana_level_1_token_starter.so` и `target/deploy/escrow.so`, поэтому перед первым `cargo test` нужен `anchor build --ignore-keys`. В Anchor CLI без поддержки этого флага используйте `anchor build --skip-lint` или эквивалентную сборку `cargo build-sbf` для каждого manifest.
 
 ## Правила сдачи
 
@@ -97,7 +127,7 @@ cargo test --workspace --locked
 - добавьте в README команды сборки и тестирования, ожидаемый результат и краткое описание архитектуры;
 - не добавляйте в репозиторий private keys, seed phrases, `.env` с секретами или файлы keypair;
 - не используйте `@solana/web3.js` в новом клиентском коде;
-- для переводов токенов используйте `transfer_checked`, а не unchecked transfer;
+- для переводов токенов используйте `transfer_checked`, а для сжигания — `burn_checked`;
 - не подменяйте проверки полномочий только клиентской логикой: все критичные инварианты должны проверяться программой.
 
 ## Что считается современным решением
