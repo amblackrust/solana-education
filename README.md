@@ -66,6 +66,27 @@ Account constraints проверяют, что mint принадлежит вы�
 
 Тесты проверяют уменьшение баланса и supply на одинаковую величину, нулевую сумму, неверный authority, другой mint и недостаточный баланс. После каждой ошибки баланс и supply остаются без изменений.
 
+## Задание 3 — escrow
+
+В workspace добавлен program `programs/escrow`. Каждая сделка хранится в `EscrowState` по PDA с seeds `[b"escrow", sender, deal_id]`. В state записаны sender, receiver, mint, точная сумма, deal ID, bump и статус. Vault — отдельный Token-2022 account PDA с seeds `[b"vault", escrow_state]`; его authority — escrow PDA, а Anchor constraints связывают его с конкретным mint и token program.
+
+### State machine
+
+```text
+Created --deposit--> Funded --release--> Released (закрытие state и vault)
+    |                    |
+    +------cancel--------+--> Cancelled (закрытие state и vault)
+```
+
+`initialize` принимает только ненулевую сумму и отличающегося receiver. `deposit` доступен sender и переводит ровно сумму сделки через `transfer_checked`. `release` доступен только sender для Funded-сделки и переводит vault в receiver ATA. `cancel` доступен sender для Created/Funded-сделки и возвращает внесённые токены sender. После завершения state и пустой vault закрываются, rent возвращается sender. Повторное завершение невозможно: аккаунты уже закрыты, а промежуточные статусы проверяются constraints.
+
+### Threat model
+
+- Чужой sender не может подписать deposit/release/cancel: sender — `Signer`, а state проверяет `has_one = sender` и PDA seeds.
+- Нельзя подменить mint, receiver, vault или token program: state `has_one`, `mint::token_program`, `token::mint`, `token::authority` и vault seeds проверяются программой.
+- Нельзя вывести больше внесённого или заблокировать чужие средства: deposit принимает только sender token account и точную сумму, release/cancel подписываются escrow PDA, а CPI использует decimals mint.
+- Нулевая сумма, повторный deposit, повторный deal ID, недостаточный баланс и неверные аккаунты отклоняются до изменения state; тесты проверяют сохранение баланса и supply после отказа.
+
 ## Зафиксированный стек
 
 - Anchor CLI и crates: `1.1.2`
@@ -86,18 +107,19 @@ Account constraints проверяют, что mint принадлежит вы�
 - выпуск токенов через `mint_to`;
 - перевод через `transfer_checked`;
 - проверки положительной суммы, полномочий, mint и token program на уровне Anchor accounts constraints;
-- инструкции `burn_tokens` через `burn_checked` и семь LiteSVM-тестов: mint, token account, minting, transfer, burn и негативные сценарии.
+- инструкции `burn_tokens` через `burn_checked` и семь LiteSVM-тестов: mint, token account, minting, transfer, burn и негативные сценарии;
+- `programs/escrow` с двумя положительными E2E-тестами release/cancel и негативными сценариями.
 
-Escrow намеренно отсутствует: он реализуется в следующем задании.
+Escrow использует только Token-2022 и `token_interface`; TypeScript-клиент не требуется.
 
 ## Быстрый старт
 
 1. Установите версии из раздела «Зафиксированный стек» через AVM, rustup и официальный Solana installer.
-2. Для локального прохождения заданий выполните `anchor build --ignore-keys`. Для собственного devnet-деплоя создайте локальный program keypair и выполните `anchor keys sync`. Не коммитьте keypair или seed phrase.
+2. Для локального прохождения заданий выполните `anchor build --ignore-keys` — он собирает оба workspace programs. Для собственного devnet-деплоя создайте локальный program keypair и выполните `anchor keys sync`. Не коммитьте keypair или seed phrase.
 3. После первой сборки выполните `cargo test --workspace --locked`.
 4. Разрабатывайте каждое задание в отдельной ветке: `task/01-tests`, `task/02-burn`, `task/03-escrow`.
 
-Тест загружает собранный файл `target/deploy/solana_level_1_token_starter.so`, поэтому перед первым `cargo test` нужен `anchor build --ignore-keys`. В Anchor CLI без поддержки этого флага используйте эквивалентный `anchor build --skip-lint`.
+Тесты загружают `target/deploy/solana_level_1_token_starter.so` и `target/deploy/escrow.so`, поэтому перед первым `cargo test` нужен `anchor build --ignore-keys`. В Anchor CLI без поддержки этого флага используйте `anchor build --skip-lint` или эквивалентную сборку `cargo build-sbf` для каждого manifest.
 
 ## Правила сдачи
 
