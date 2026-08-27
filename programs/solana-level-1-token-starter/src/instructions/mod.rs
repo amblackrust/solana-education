@@ -1,8 +1,11 @@
+pub mod burn_tokens;
 pub mod create_token;
 pub mod create_token_account;
 pub mod mint_tokens;
 pub mod transfer_tokens;
 
+#[allow(ambiguous_glob_reexports)]
+pub use burn_tokens::*;
 #[allow(ambiguous_glob_reexports)]
 pub use create_token::*;
 #[allow(ambiguous_glob_reexports)]
