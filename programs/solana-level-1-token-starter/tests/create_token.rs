@@ -205,6 +205,24 @@ fn mint_to(
     )
 }
 
+fn burn_instruction(
+    authority: anchor_lang::prelude::Pubkey,
+    mint: anchor_lang::prelude::Pubkey,
+    source: anchor_lang::prelude::Pubkey,
+    amount: u64,
+) -> Instruction {
+    let accounts = solana_level_1_token_starter::accounts::BurnTokens {
+        authority,
+        mint,
+        source,
+        token_program: token_2022::ID,
+    };
+    instruction(
+        solana_level_1_token_starter::instruction::BurnTokens { amount }.data(),
+        accounts.to_account_metas(None),
+    )
+}
+
 #[test]
 fn mint_tokens_changes_recipient_balance_and_supply() {
     let mut fixture = Fixture::new();
@@ -254,6 +272,119 @@ fn transfer_tokens_changes_both_balances_without_changing_supply() {
         MINT_AMOUNT - TRANSFER_AMOUNT
     );
     assert_eq!(token_balance(&fixture.svm, &destination), TRANSFER_AMOUNT);
+    assert_eq!(
+        mint_state(&fixture.svm, &fixture.mint.pubkey()).supply,
+        supply_before
+    );
+}
+
+#[test]
+fn burn_tokens_decreases_balance_and_supply_by_the_same_amount() {
+    let mut fixture = Fixture::new();
+    let payer_address = fixture.payer.pubkey();
+    fixture.create_token_account(&payer_address);
+    let source = fixture.token_account(&payer_address);
+    mint_to(&mut fixture, source, MINT_AMOUNT).expect("mint_tokens must succeed");
+    let supply_before = mint_state(&fixture.svm, &fixture.mint.pubkey()).supply;
+
+    send(
+        &mut fixture.svm,
+        burn_instruction(
+            fixture.payer.pubkey(),
+            fixture.mint.pubkey(),
+            source,
+            TRANSFER_AMOUNT,
+        ),
+        &[&fixture.payer],
+    )
+    .expect("burn_tokens must succeed");
+
+    assert_eq!(
+        token_balance(&fixture.svm, &source),
+        MINT_AMOUNT - TRANSFER_AMOUNT
+    );
+    assert_eq!(
+        mint_state(&fixture.svm, &fixture.mint.pubkey()).supply,
+        supply_before - TRANSFER_AMOUNT
+    );
+}
+
+#[test]
+fn burn_tokens_rejects_invalid_requests_without_changing_state() {
+    let mut fixture = Fixture::new();
+    let payer_address = fixture.payer.pubkey();
+    fixture.create_token_account(&payer_address);
+    let source = fixture.token_account(&payer_address);
+    mint_to(&mut fixture, source, MINT_AMOUNT).expect("mint_tokens must succeed");
+    let balance_before = token_balance(&fixture.svm, &source);
+    let supply_before = mint_state(&fixture.svm, &fixture.mint.pubkey()).supply;
+
+    let zero_error = send(
+        &mut fixture.svm,
+        burn_instruction(fixture.payer.pubkey(), fixture.mint.pubkey(), source, 0),
+        &[&fixture.payer],
+    )
+    .expect_err("zero amount must fail");
+    assert!(zero_error.contains("AmountMustBePositive"));
+
+    let wrong_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&wrong_authority.pubkey(), AIRDROP_LAMPORTS)
+        .expect("wrong authority must be funded for transaction fees");
+    assert!(
+        send(
+            &mut fixture.svm,
+            burn_instruction(wrong_authority.pubkey(), fixture.mint.pubkey(), source, 1,),
+            &[&fixture.payer, &wrong_authority],
+        )
+        .is_err(),
+        "wrong authority must fail"
+    );
+
+    let other_mint = Keypair::new();
+    let other_mint_accounts = solana_level_1_token_starter::accounts::CreateToken {
+        payer: fixture.payer.pubkey(),
+        authority: fixture.authority.pubkey(),
+        mint: other_mint.pubkey(),
+        token_program: token_2022::ID,
+        system_program: anchor_lang::system_program::ID,
+    };
+    send(
+        &mut fixture.svm,
+        instruction(
+            solana_level_1_token_starter::instruction::CreateToken { decimals: DECIMALS }.data(),
+            other_mint_accounts.to_account_metas(None),
+        ),
+        &[&fixture.payer, &fixture.authority, &other_mint],
+    )
+    .expect("second mint must be created");
+    assert!(
+        send(
+            &mut fixture.svm,
+            burn_instruction(fixture.payer.pubkey(), other_mint.pubkey(), source, 1,),
+            &[&fixture.payer],
+        )
+        .is_err(),
+        "different mint must fail"
+    );
+
+    assert!(
+        send(
+            &mut fixture.svm,
+            burn_instruction(
+                fixture.payer.pubkey(),
+                fixture.mint.pubkey(),
+                source,
+                MINT_AMOUNT + 1,
+            ),
+            &[&fixture.payer],
+        )
+        .is_err(),
+        "insufficient balance must fail"
+    );
+
+    assert_eq!(token_balance(&fixture.svm, &source), balance_before);
     assert_eq!(
         mint_state(&fixture.svm, &fixture.mint.pubkey()).supply,
         supply_before
